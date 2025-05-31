@@ -1,5 +1,6 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../../models/i18n_models.dart';
 import '../../services/i18n_service.dart';
 
@@ -19,6 +20,9 @@ class _HomePageState extends State<HomePage> {
   final ScrollController _scrollController = ScrollController();
 
   static const rtlLangs = {'ar', 'fa', 'he', 'ku', 'ks', 'ur'};
+
+  int? editingRow;
+  String? editingLang;
 
   @override
   void dispose() {
@@ -67,10 +71,17 @@ class _HomePageState extends State<HomePage> {
 
   void addKey() {
     if (tableModel == null) return;
-    setState(() {
-      tableModel!.entries.add(I18nStringEntry(key: '', translations: {
-        for (var lang in tableModel!.languageCodes) lang: ''
-      }));
+    tableModel!.entries.add(I18nStringEntry(
+        key: '',
+        translations: {for (var lang in tableModel!.languageCodes) lang: ''}));
+    setState(() {});
+    //scroll to the bottom
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 100),
+        curve: Curves.linear,
+      );
     });
   }
 
@@ -119,6 +130,17 @@ class _HomePageState extends State<HomePage> {
               onPressed: save,
               tooltip: 'Save',
             ),
+            IconButton(
+              icon: const Icon(Icons.copy),
+              onPressed: () {
+                Clipboard.setData(
+                    const ClipboardData(text: "flutter pub run slang"));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Copied to clipboard!')),
+                );
+              },
+              tooltip: 'RUN',
+            ),
           ]
         ],
       ),
@@ -155,132 +177,181 @@ class _HomePageState extends State<HomePage> {
                         Expanded(
                           child: tableModel == null
                               ? const Center(child: Text('No data'))
-                              : Scrollbar(
-                                  thumbVisibility: true,
-                                  controller: _scrollController,
-                                  child: ListView.builder(
-                                    controller: _scrollController,
-                                    itemCount: tableModel!.entries.length,
-                                    itemBuilder: (context, i) {
-                                      final entry = tableModel!.entries[i];
-                                      if (search.isNotEmpty &&
-                                          !entry.key.contains(search))
-                                        return const SizedBox.shrink();
-                                      final rowColor = !isValidKey(entry.key)
-                                          ? Colors.red[100]
-                                          : entry.translations.values
-                                                  .any((v) => (v ?? '').isEmpty)
-                                              ? Colors.yellow[50]
-                                              : null;
-                                      return Container(
-                                        color: rowColor,
-                                        child: Row(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            SizedBox(
-                                              width: 200,
-                                              child: Padding(
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                        horizontal: 4,
-                                                        vertical: 2),
-                                                child: TextFormField(
-                                                  initialValue: entry.key,
-                                                  decoration: InputDecoration(
-                                                    border:
-                                                        const OutlineInputBorder(),
-                                                    isDense: true,
-                                                    errorText:
-                                                        entry.key.isEmpty ||
-                                                                isValidKey(
-                                                                    entry.key)
-                                                            ? null
-                                                            : 'Invalid',
-                                                  ),
-                                                  style: const TextStyle(
-                                                      fontSize: 12),
-                                                  onChanged: (v) {
-                                                    entry.key = v;
-                                                    setState(() {});
-                                                  },
-                                                ),
-                                              ),
-                                            ),
-                                            ...tableModel!.languageCodes
-                                                .map((lang) {
-                                              final missing =
-                                                  (entry.translations[lang] ??
-                                                          '')
-                                                      .isEmpty;
-                                              final isRtl =
-                                                  rtlLangs.contains(lang);
-                                              return Expanded(
-                                                child: Padding(
-                                                  padding: const EdgeInsets
-                                                      .symmetric(
-                                                      horizontal: 4,
-                                                      vertical: 2),
-                                                  child: TextFormField(
-                                                    initialValue:
-                                                        entry.translations[
-                                                                lang] ??
-                                                            '',
-                                                    decoration: InputDecoration(
-                                                      border:
-                                                          const OutlineInputBorder(),
-                                                      isDense: true,
-                                                      fillColor: missing
-                                                          ? Colors.yellow[100]
-                                                          : null,
-                                                      filled: missing,
-                                                    ),
-                                                    style: const TextStyle(
-                                                        fontSize: 12),
-                                                    textDirection: isRtl
-                                                        ? TextDirection.rtl
-                                                        : TextDirection.ltr,
-                                                    onChanged: (v) {
-                                                      entry.translations[lang] =
-                                                          v;
-                                                      setState(() {});
-                                                    },
-                                                    minLines: null,
-                                                    maxLines: null,
-                                                  ),
-                                                ),
-                                              );
-                                            }),
-                                            SizedBox(
-                                              width: 100,
-                                              child: Row(
-                                                children: [
-                                                  IconButton(
-                                                    icon:
-                                                        const Icon(Icons.copy),
-                                                    tooltip: 'Duplicate',
-                                                    onPressed: () =>
-                                                        duplicateKey(i),
-                                                  ),
-                                                  IconButton(
-                                                    icon: const Icon(
-                                                        Icons.delete),
-                                                    tooltip: 'Delete',
-                                                    onPressed: () =>
-                                                        removeKey(i),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                ),
+                              : scrollBarWidget(),
                         ),
                       ],
                     ),
+    );
+  }
+
+  Scrollbar scrollBarWidget() {
+    return Scrollbar(
+      thumbVisibility: true,
+      controller: _scrollController,
+      child: ListView.builder(
+        controller: _scrollController,
+        itemCount: tableModel!.entries.length,
+        itemBuilder: (context, i) {
+          final entry = tableModel!.entries[i];
+          if (search.length > 3 && !entry.key.contains(search)) {
+            return const SizedBox.shrink();
+          }
+          final rowColor = !isValidKey(entry.key)
+              ? Colors.red[100]
+              : entry.translations.values.any((v) => (v ?? '').isEmpty)
+                  ? Colors.yellow[50]
+                  : null;
+          return cellsWidget(rowColor, i, entry);
+        },
+      ),
+    );
+  }
+
+  Container cellsWidget(Color? rowColor, int i, I18nStringEntry entry) {
+    return Container(
+      color: rowColor,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 200,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              child: (editingRow == i && editingLang == null)
+                  ? TextFormField(
+                      initialValue: entry.key,
+                      autofocus: true,
+                      decoration: InputDecoration(
+                        border: const OutlineInputBorder(),
+                        isDense: true,
+                        errorText: entry.key.isEmpty || isValidKey(entry.key)
+                            ? null
+                            : 'Invalid',
+                      ),
+                      style: const TextStyle(fontSize: 12),
+                      onFieldSubmitted: (_) => setState(() {
+                        editingRow = null;
+                        editingLang = null;
+                      }),
+                      maxLines: null,
+                      minLines: null,
+                      onChanged: (v) {
+                        entry.key = v;
+                        setState(() {});
+                      },
+                    )
+                  : GestureDetector(
+                      onTap: () => setState(() {
+                        editingRow = i;
+                        editingLang = null;
+                      }),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 8, horizontal: 12),
+                        decoration: BoxDecoration(
+                          border: Border.all(
+                            color: rowColor != null
+                                ? Colors.orangeAccent
+                                : Colors.grey.shade300,
+                            width: 1,
+                          ),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          entry.key,
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ),
+            ),
+          ),
+          ...tableModel!.languageCodes.map((lang) {
+            final missing = (entry.translations[lang] ?? '').isEmpty;
+            final isRtl = rtlLangs.contains(lang);
+            final isEditing = editingRow == i && editingLang == lang;
+            return Expanded(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                child: isEditing
+                    ? editingTextWidget(entry, lang, missing, isRtl)
+                    : onlyShowText(i, lang, missing, isRtl, entry),
+              ),
+            );
+          }),
+          SizedBox(
+            width: 100,
+            child: Row(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.copy),
+                  tooltip: 'Duplicate',
+                  onPressed: () => duplicateKey(i),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.delete),
+                  tooltip: 'Delete',
+                  onPressed: () => removeKey(i),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  GestureDetector onlyShowText(
+      int i, String lang, bool missing, bool isRtl, I18nStringEntry entry) {
+    return GestureDetector(
+      onTap: () => setState(() {
+        editingRow = i;
+        editingLang = lang;
+      }),
+      child: Container(
+        constraints: const BoxConstraints(
+          minWidth: 50,
+        ), // Added this line
+        decoration: BoxDecoration(
+          border: Border.all(
+            color: missing ? Colors.yellow.shade700 : Colors.grey.shade300,
+            width: 1,
+          ),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+        alignment: isRtl ? Alignment.centerRight : Alignment.centerLeft,
+        child: Text(
+          entry.translations[lang] ?? '',
+          style: const TextStyle(fontSize: 12),
+          textDirection: isRtl ? TextDirection.rtl : TextDirection.ltr,
+        ),
+      ),
+    );
+  }
+
+  TextFormField editingTextWidget(
+      I18nStringEntry entry, String lang, bool missing, bool isRtl) {
+    return TextFormField(
+      initialValue: entry.translations[lang] ?? '',
+      autofocus: true,
+      decoration: InputDecoration(
+        border: const OutlineInputBorder(),
+        isDense: true,
+        fillColor: missing ? Colors.yellow[100] : null,
+        filled: missing,
+      ),
+      minLines: null,
+      maxLines: null,
+      style: const TextStyle(fontSize: 12),
+      textDirection: isRtl ? TextDirection.rtl : TextDirection.ltr,
+      onFieldSubmitted: (_) => setState(() {
+        editingRow = null;
+        editingLang = null;
+      }),
+      onChanged: (v) {
+        entry.translations[lang] = v;
+        setState(() {});
+      },
     );
   }
 }
