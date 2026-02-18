@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../models/i18n_models.dart';
 import '../../../providers/project_provider.dart';
 import '../../../providers/search_provider.dart';
+import '../../../services/ai_translation_service.dart';
 import '../../../services/i18n_service.dart';
 
 class ToolbarWidget extends ConsumerStatefulWidget {
@@ -112,24 +113,114 @@ class _ToolbarWidgetState extends ConsumerState<ToolbarWidget> {
 
   void _showAddKeyDialog() {
     final controller = TextEditingController();
+    final autoGenerate = ValueNotifier<bool>(false);
+
+    void addKey(BuildContext ctx) async {
+      final key = controller.text;
+      if (!I18nService.isValidKey(key)) return;
+
+      ref.read(projectProvider.notifier).addEntry(key);
+      final shouldGenerate = autoGenerate.value;
+      Navigator.pop(ctx);
+
+      if (shouldGenerate) {
+        final project = ref.read(projectProvider).valueOrNull;
+        if (project == null) return;
+        final entry = project.entries.firstWhere(
+          (e) => e.key == key,
+          orElse: () => I18nEntry(key: key, translations: {}),
+        );
+        final langs = project.languages;
+        if (langs.isEmpty) return;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(width: 12),
+                Text('Generating AI translations…'),
+              ],
+            ),
+            duration: Duration(seconds: 30),
+          ),
+        );
+
+        try {
+          final translations =
+              await AiTranslationService.generateAllTranslations(
+            key: key,
+            existingTranslations: entry.translations,
+            languages: langs,
+          );
+          final notifier = ref.read(projectProvider.notifier);
+          // Find the index of the newly-added entry
+          final updatedProject = ref.read(projectProvider).valueOrNull;
+          if (updatedProject != null) {
+            final idx = updatedProject.entries.indexWhere((e) => e.key == key);
+            if (idx != -1) {
+              for (final langEntry in translations.entries) {
+                notifier.updateTranslation(idx, langEntry.key, langEntry.value);
+              }
+            }
+          }
+          if (mounted) {
+            ScaffoldMessenger.of(context).hideCurrentSnackBar();
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Generated ${translations.length} translations for "$key"',
+                ),
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          }
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).hideCurrentSnackBar();
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('AI generation failed: $e')),
+            );
+          }
+        }
+      }
+    }
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Add New Key'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Key name',
-            hintText: 'e.g. homeTitle',
-            border: OutlineInputBorder(),
-          ),
-          onSubmitted: (value) {
-            if (I18nService.isValidKey(value)) {
-              ref.read(projectProvider.notifier).addEntry(value);
-              Navigator.pop(ctx);
-            }
-          },
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: controller,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Key name',
+                hintText: 'e.g. homeTitle',
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => addKey(ctx),
+            ),
+            const SizedBox(height: 12),
+            ValueListenableBuilder<bool>(
+              valueListenable: autoGenerate,
+              builder: (_, value, __) => CheckboxListTile(
+                value: value,
+                onChanged: (v) => autoGenerate.value = v ?? false,
+                title: const Text('Auto-generate translations with AI'),
+                subtitle: const Text('Uses Gemini to fill all languages'),
+                controlAffinity: ListTileControlAffinity.leading,
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -137,18 +228,15 @@ class _ToolbarWidgetState extends ConsumerState<ToolbarWidget> {
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () {
-              final key = controller.text;
-              if (I18nService.isValidKey(key)) {
-                ref.read(projectProvider.notifier).addEntry(key);
-                Navigator.pop(ctx);
-              }
-            },
+            onPressed: () => addKey(ctx),
             child: const Text('Add'),
           ),
         ],
       ),
-    ).then((_) => controller.dispose());
+    ).then((_) {
+      controller.dispose();
+      autoGenerate.dispose();
+    });
   }
 
   void _showAddLanguageDialog() {

@@ -5,6 +5,7 @@ import 'package:syncfusion_flutter_datagrid/datagrid.dart';
 import '../../../models/i18n_models.dart';
 import '../../../providers/project_provider.dart';
 import '../../../providers/table_provider.dart';
+import '../../../services/ai_translation_service.dart';
 import '../../../services/i18n_service.dart';
 
 class DataGridWidget extends ConsumerStatefulWidget {
@@ -89,6 +90,12 @@ class _DataGridWidgetState extends ConsumerState<DataGridWidget> {
           onRemoveLanguage: (lang) {
             _showRemoveLanguageConfirmation(context, lang);
           },
+          onAiGenerateCell: (originalIndex, lang) {
+            _generateAiForCell(originalIndex, lang);
+          },
+          onAiGenerateRow: (originalIndex) {
+            _generateAiForRow(originalIndex);
+          },
         );
 
         return SfDataGrid(
@@ -132,7 +139,7 @@ class _DataGridWidgetState extends ConsumerState<DataGridWidget> {
             GridColumn(
               columnName: '_actions',
               label: _buildHeaderCell('Actions'),
-              width: 90,
+              width: 110,
               allowEditing: false,
               allowSorting: false,
             ),
@@ -180,6 +187,135 @@ class _DataGridWidgetState extends ConsumerState<DataGridWidget> {
         ],
       ),
     );
+  }
+
+  /// Generate AI translation for a single cell.
+  Future<void> _generateAiForCell(int originalIndex, String lang) async {
+    final project = ref.read(projectProvider).valueOrNull;
+    if (project == null) return;
+    if (originalIndex < 0 || originalIndex >= project.entries.length) return;
+
+    final entry = project.entries[originalIndex];
+
+    // Show loading snackbar
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                  'Generating ${lang.toUpperCase()} translation for "${entry.key}"...'),
+            ],
+          ),
+          duration: const Duration(seconds: 10),
+        ),
+      );
+    }
+
+    final translation = await AiTranslationService.generateTranslation(
+      key: entry.key,
+      targetLang: lang,
+      referenceTranslations: entry.translations,
+    );
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    }
+
+    if (translation != null && translation.isNotEmpty) {
+      ref
+          .read(projectProvider.notifier)
+          .updateTranslation(originalIndex, lang, translation);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Generated ${lang.toUpperCase()}: "$translation"'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('AI generation failed. Please try again.'),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+  }
+
+  /// Generate AI translations for all empty cells in a row.
+  Future<void> _generateAiForRow(int originalIndex) async {
+    final project = ref.read(projectProvider).valueOrNull;
+    if (project == null) return;
+    if (originalIndex < 0 || originalIndex >= project.entries.length) return;
+
+    final entry = project.entries[originalIndex];
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 12),
+              Text('Generating all translations for "${entry.key}"...'),
+            ],
+          ),
+          duration: const Duration(seconds: 30),
+        ),
+      );
+    }
+
+    final results = await AiTranslationService.generateAllTranslations(
+      key: entry.key,
+      languages: project.languages,
+      existingTranslations: entry.translations,
+    );
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    }
+
+    if (results.isNotEmpty) {
+      for (final entry in results.entries) {
+        ref
+            .read(projectProvider.notifier)
+            .updateTranslation(originalIndex, entry.key, entry.value);
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                'Generated ${results.length} translations for "${project.entries[originalIndex].key}"'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('AI generation failed. Please try again.'),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    }
   }
 
   void _showDeleteConfirmation(BuildContext context, int originalIndex) {
@@ -248,6 +384,8 @@ class I18nDataSource extends DataGridSource {
   final void Function(int originalIndex) onDelete;
   final void Function(int originalIndex) onDuplicate;
   final void Function(String lang) onRemoveLanguage;
+  final void Function(int originalIndex, String lang) onAiGenerateCell;
+  final void Function(int originalIndex) onAiGenerateRow;
 
   List<DataGridRow> _rows = [];
 
@@ -262,6 +400,8 @@ class I18nDataSource extends DataGridSource {
     required this.onDelete,
     required this.onDuplicate,
     required this.onRemoveLanguage,
+    required this.onAiGenerateCell,
+    required this.onAiGenerateRow,
   }) {
     _buildRows();
   }
@@ -309,17 +449,27 @@ class I18nDataSource extends DataGridSource {
           return _ActionsCell(
             onDuplicate: () => onDuplicate(originalIndex),
             onDelete: () => onDelete(originalIndex),
+            onAiGenerateAll: () => onAiGenerateRow(originalIndex),
           );
         }
 
         final isRtl = I18nService.isRtl(cell.columnName);
         final isKey = cell.columnName == 'key';
+        final cellValue = cell.value?.toString() ?? '';
+        final isEmpty = cellValue.isEmpty;
+        final isLangCell = !isKey;
 
-        return Container(
+        // Find the original index for this row
+        final rowIdx = cells
+            .where((c) => c.columnName == '_actions')
+            .map((c) => c.value as int)
+            .firstOrNull;
+
+        final cellWidget = Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
           alignment: isRtl ? Alignment.centerRight : Alignment.centerLeft,
           child: Text(
-            cell.value?.toString() ?? '',
+            cellValue,
             style: TextStyle(
               fontSize: 12,
               fontFamily: isKey ? 'firacode' : null,
@@ -330,6 +480,20 @@ class I18nDataSource extends DataGridSource {
             maxLines: 2,
           ),
         );
+
+        // Wrap language cells with right-click context menu
+        if (isLangCell && rowIdx != null) {
+          return _CellWithContextMenu(
+            cellWidget: cellWidget,
+            isEmpty: isEmpty,
+            langCode: cell.columnName,
+            originalIndex: rowIdx,
+            onAiGenerate: () => onAiGenerateCell(rowIdx, cell.columnName),
+            onAiGenerateAll: () => onAiGenerateRow(rowIdx),
+          );
+        }
+
+        return cellWidget;
       }).toList(),
     );
   }
@@ -401,14 +565,16 @@ class I18nDataSource extends DataGridSource {
   }
 }
 
-/// Actions cell with duplicate and delete buttons.
+/// Actions cell with duplicate, delete, and AI generate buttons.
 class _ActionsCell extends StatelessWidget {
   final VoidCallback onDuplicate;
   final VoidCallback onDelete;
+  final VoidCallback onAiGenerateAll;
 
   const _ActionsCell({
     required this.onDuplicate,
     required this.onDelete,
+    required this.onAiGenerateAll,
   });
 
   @override
@@ -417,8 +583,19 @@ class _ActionsCell extends StatelessWidget {
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         SizedBox(
-          width: 30,
-          height: 30,
+          width: 28,
+          height: 28,
+          child: IconButton(
+            icon: Icon(Icons.auto_awesome,
+                size: 14, color: Colors.purple.shade400),
+            tooltip: 'AI Generate All Missing',
+            onPressed: onAiGenerateAll,
+            padding: EdgeInsets.zero,
+          ),
+        ),
+        SizedBox(
+          width: 28,
+          height: 28,
           child: IconButton(
             icon: const Icon(Icons.copy, size: 14),
             tooltip: 'Duplicate',
@@ -427,8 +604,8 @@ class _ActionsCell extends StatelessWidget {
           ),
         ),
         SizedBox(
-          width: 30,
-          height: 30,
+          width: 28,
+          height: 28,
           child: IconButton(
             icon: const Icon(Icons.delete_outline, size: 14, color: Colors.red),
             tooltip: 'Delete',
@@ -438,5 +615,82 @@ class _ActionsCell extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+/// A cell wrapper that shows a right-click context menu with AI generation options.
+class _CellWithContextMenu extends StatelessWidget {
+  final Widget cellWidget;
+  final bool isEmpty;
+  final String langCode;
+  final int originalIndex;
+  final VoidCallback onAiGenerate;
+  final VoidCallback onAiGenerateAll;
+
+  const _CellWithContextMenu({
+    required this.cellWidget,
+    required this.isEmpty,
+    required this.langCode,
+    required this.originalIndex,
+    required this.onAiGenerate,
+    required this.onAiGenerateAll,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onSecondaryTapUp: (details) {
+        _showContextMenu(context, details.globalPosition);
+      },
+      child: cellWidget,
+    );
+  }
+
+  void _showContextMenu(BuildContext context, Offset position) {
+    showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        position.dx,
+        position.dy,
+        position.dx,
+        position.dy,
+      ),
+      items: [
+        PopupMenuItem<String>(
+          value: 'ai_cell',
+          child: Row(
+            children: [
+              Icon(Icons.auto_awesome, size: 16, color: Colors.purple.shade400),
+              const SizedBox(width: 8),
+              Text(
+                isEmpty
+                    ? 'Generate ${langCode.toUpperCase()} with AI'
+                    : 'Regenerate ${langCode.toUpperCase()} with AI',
+                style: const TextStyle(fontSize: 13),
+              ),
+            ],
+          ),
+        ),
+        PopupMenuItem<String>(
+          value: 'ai_row',
+          child: Row(
+            children: [
+              Icon(Icons.auto_awesome, size: 16, color: Colors.purple.shade400),
+              const SizedBox(width: 8),
+              const Text(
+                'Generate All Missing with AI',
+                style: TextStyle(fontSize: 13),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ).then((value) {
+      if (value == 'ai_cell') {
+        onAiGenerate();
+      } else if (value == 'ai_row') {
+        onAiGenerateAll();
+      }
+    });
   }
 }
