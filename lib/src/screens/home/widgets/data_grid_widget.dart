@@ -550,17 +550,24 @@ class I18nDataSource extends DataGridSource {
   @override
   Future<void> onCellSubmit(DataGridRow dataGridRow,
       RowColumnIndex rowColumnIndex, GridColumn column) async {
-    final rowIndex = rowColumnIndex.rowIndex - 1; // header offset
-    if (rowIndex < 0 || rowIndex >= entries.length) return;
-
-    final indexed = entries[rowIndex];
     final columnName = column.columnName;
+    if (columnName == '_actions') return;
+
+    // Extract the original index from the _actions cell embedded in this row,
+    // rather than relying on rowColumnIndex which can be offset by headers.
+    final actionsCell = dataGridRow
+        .getCells()
+        .where((c) => c.columnName == '_actions')
+        .firstOrNull;
+    if (actionsCell == null) return;
+    final originalIndex = actionsCell.value as int;
+
     final newValue = _newCellValue?.toString() ?? '';
 
     if (columnName == 'key') {
-      onKeyChanged(indexed.originalIndex, newValue);
-    } else if (columnName != '_actions') {
-      onTranslationChanged(indexed.originalIndex, columnName, newValue);
+      onKeyChanged(originalIndex, newValue);
+    } else {
+      onTranslationChanged(originalIndex, columnName, newValue);
     }
   }
 }

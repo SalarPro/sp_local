@@ -19,9 +19,83 @@ class I18nService {
   /// Whether a language code is RTL.
   static bool isRtl(String langCode) => rtlLangs.contains(langCode);
 
-  /// Validates a key string.
+  /// Dart reserved keywords and built-in identifiers that cannot be used as keys.
+  static const _dartKeywords = <String>{
+    'abstract', 'as', 'assert', 'async', 'await', 'base', 'break', 'case',
+    'catch', 'class', 'const', 'continue', 'covariant', 'default', 'deferred',
+    'do', 'dynamic', 'else', 'enum', 'export', 'extends', 'extension',
+    'external', 'factory', 'false', 'final', 'finally', 'for', 'Function',
+    'get', 'hide', 'if', 'implements', 'import', 'in', 'interface', 'is',
+    'late', 'library', 'mixin', 'new', 'null', 'of', 'on', 'operator', 'part',
+    'required', 'rethrow', 'return', 'sealed', 'set', 'show', 'static',
+    'super', 'switch', 'sync', 'this', 'throw', 'true', 'try', 'typedef',
+    'var', 'void', 'when', 'while', 'with', 'yield',
+    // Common built-in types
+    'int', 'double', 'String', 'bool', 'List', 'Map', 'Set', 'num', 'Object',
+    'Null', 'Never', 'Future', 'Stream', 'Iterable', 'Type', 'Symbol',
+  };
+
+  /// Whether [key] is a Dart reserved keyword or built-in identifier.
+  static bool isDartKeyword(String key) => _dartKeywords.contains(key);
+
+  /// Validates a key string: must start with lowercase a-z, followed by
+  /// letters, digits, or underscores only. Must not be a Dart keyword.
   static bool isValidKey(String key) {
-    return RegExp(r'^[a-z][a-zA-Z0-9_.]*$').hasMatch(key);
+    if (key.isEmpty) return false;
+    if (!RegExp(r'^[a-z][a-zA-Z0-9_]*$').hasMatch(key)) return false;
+    if (isDartKeyword(key)) return false;
+    return true;
+  }
+
+  /// Returns a human-readable validation error for [key], or null if valid.
+  static String? validateKey(String key) {
+    if (key.isEmpty) return 'Key cannot be empty';
+    if (!RegExp(r'^[a-z]').hasMatch(key)) {
+      return 'Must start with a lowercase letter (a-z)';
+    }
+    if (!RegExp(r'^[a-zA-Z0-9_ .\-]+$').hasMatch(key)) {
+      return 'Contains invalid characters';
+    }
+    final camel = toCamelCase(key);
+    if (isDartKeyword(camel)) return '"$camel" is a Dart reserved keyword';
+    return null;
+  }
+
+  /// Converts any string to camelCase.
+  /// Splits on spaces, hyphens, underscores, dots, and existing case boundaries,
+  /// then joins as camelCase.
+  static String toCamelCase(String input) {
+    if (input.isEmpty) return input;
+
+    // Split on non-alphanumeric characters and camelCase boundaries
+    final words = input
+        .replaceAllMapped(
+          RegExp(r'[A-Z]'),
+          (m) => ' ${m.group(0)}',
+        )
+        .split(RegExp(r'[\s_\-\.]+'))
+        .where((w) => w.isNotEmpty)
+        .toList();
+
+    if (words.isEmpty) return input;
+
+    final buffer = StringBuffer();
+    for (var i = 0; i < words.length; i++) {
+      final word = words[i].toLowerCase();
+      if (i == 0) {
+        buffer.write(word);
+      } else {
+        buffer.write(word[0].toUpperCase());
+        if (word.length > 1) buffer.write(word.substring(1));
+      }
+    }
+
+    final result = buffer.toString();
+    // Strip any leading non-letter characters
+    final cleaned = result.replaceFirst(RegExp(r'^[^a-zA-Z]+'), '');
+    if (cleaned.isEmpty) return result;
+    // Ensure first char is lowercase
+    return cleaned[0].toLowerCase() + cleaned.substring(1);
   }
 
   /// Loads all i18n JSON files in the given folder and returns an [I18nProject].

@@ -114,12 +114,48 @@ class _ToolbarWidgetState extends ConsumerState<ToolbarWidget> {
   void _showAddKeyDialog() {
     final controller = TextEditingController();
     final autoGenerate = ValueNotifier<bool>(false);
+    final errorNotifier = ValueNotifier<String?>(null);
+    final camelPreview = ValueNotifier<String>('');
+
+    String convertAndValidate(String input) {
+      if (input.trim().isEmpty) {
+        errorNotifier.value = null;
+        camelPreview.value = '';
+        return '';
+      }
+      final camel = I18nService.toCamelCase(input.trim());
+      camelPreview.value = camel;
+
+      // Validate the converted key
+      final validationError = I18nService.validateKey(input.trim());
+      if (validationError != null) {
+        errorNotifier.value = validationError;
+        return camel;
+      }
+
+      if (!I18nService.isValidKey(camel)) {
+        errorNotifier.value = 'Invalid key after conversion';
+        return camel;
+      }
+
+      // Check for duplicate
+      final project = ref.read(projectProvider).valueOrNull;
+      if (project != null && project.entries.any((e) => e.key == camel)) {
+        errorNotifier.value = '⚠ Key "$camel" already exists';
+        return camel;
+      }
+
+      errorNotifier.value = null;
+      return camel;
+    }
+
+    controller.addListener(() => convertAndValidate(controller.text));
 
     void addKey(BuildContext ctx) async {
-      final key = controller.text;
-      if (!I18nService.isValidKey(key)) return;
+      final camel = convertAndValidate(controller.text);
+      if (camel.isEmpty || errorNotifier.value != null) return;
 
-      ref.read(projectProvider.notifier).addEntry(key);
+      ref.read(projectProvider.notifier).addEntry(camel);
       final shouldGenerate = autoGenerate.value;
       Navigator.pop(ctx);
 
@@ -127,8 +163,8 @@ class _ToolbarWidgetState extends ConsumerState<ToolbarWidget> {
         final project = ref.read(projectProvider).valueOrNull;
         if (project == null) return;
         final entry = project.entries.firstWhere(
-          (e) => e.key == key,
-          orElse: () => I18nEntry(key: key, translations: {}),
+          (e) => e.key == camel,
+          orElse: () => I18nEntry(key: camel, translations: {}),
         );
         final langs = project.languages;
         if (langs.isEmpty) return;
@@ -153,15 +189,15 @@ class _ToolbarWidgetState extends ConsumerState<ToolbarWidget> {
         try {
           final translations =
               await AiTranslationService.generateAllTranslations(
-            key: key,
+            key: camel,
             existingTranslations: entry.translations,
             languages: langs,
           );
           final notifier = ref.read(projectProvider.notifier);
-          // Find the index of the newly-added entry
           final updatedProject = ref.read(projectProvider).valueOrNull;
           if (updatedProject != null) {
-            final idx = updatedProject.entries.indexWhere((e) => e.key == key);
+            final idx =
+                updatedProject.entries.indexWhere((e) => e.key == camel);
             if (idx != -1) {
               for (final langEntry in translations.entries) {
                 notifier.updateTranslation(idx, langEntry.key, langEntry.value);
@@ -173,7 +209,7 @@ class _ToolbarWidgetState extends ConsumerState<ToolbarWidget> {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(
-                  'Generated ${translations.length} translations for "$key"',
+                  'Generated ${translations.length} translations for "$camel"',
                 ),
                 duration: const Duration(seconds: 2),
               ),
@@ -196,18 +232,98 @@ class _ToolbarWidgetState extends ConsumerState<ToolbarWidget> {
         title: const Text('Add New Key'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             TextField(
               controller: controller,
               autofocus: true,
               decoration: const InputDecoration(
                 labelText: 'Key name',
-                hintText: 'e.g. homeTitle',
+                hintText: 'e.g. homeTitle, my-key, Home Title',
+                helperText: 'Auto-converts to camelCase',
                 border: OutlineInputBorder(),
               ),
               onSubmitted: (_) => addKey(ctx),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
+            // Live camelCase preview
+            ValueListenableBuilder<String>(
+              valueListenable: camelPreview,
+              builder: (_, preview, __) {
+                if (preview.isEmpty) return const SizedBox.shrink();
+                final inputTrimmed = controller.text.trim();
+                final isDifferent = inputTrimmed != preview;
+                return Container(
+                  width: double.infinity,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.blue.shade200),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        isDifferent ? Icons.auto_fix_high : Icons.check,
+                        size: 14,
+                        color: Colors.blue.shade700,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        isDifferent ? 'Will be saved as: ' : 'Key: ',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.blue.shade700,
+                        ),
+                      ),
+                      Text(
+                        preview,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontFamily: 'firacode',
+                          fontWeight: FontWeight.bold,
+                          color: Colors.blue.shade900,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+            // Error / warning message
+            ValueListenableBuilder<String?>(
+              valueListenable: errorNotifier,
+              builder: (_, error, __) {
+                if (error == null) return const SizedBox.shrink();
+                final isWarning = error.startsWith('⚠');
+                return Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Row(
+                    children: [
+                      Icon(
+                        isWarning ? Icons.warning_amber : Icons.error_outline,
+                        size: 14,
+                        color: isWarning ? Colors.orange : Colors.red,
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          error,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: isWarning
+                                ? Colors.orange.shade800
+                                : Colors.red,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 8),
             ValueListenableBuilder<bool>(
               valueListenable: autoGenerate,
               builder: (_, value, __) => CheckboxListTile(
@@ -227,15 +343,20 @@ class _ToolbarWidgetState extends ConsumerState<ToolbarWidget> {
             onPressed: () => Navigator.pop(ctx),
             child: const Text('Cancel'),
           ),
-          FilledButton(
-            onPressed: () => addKey(ctx),
-            child: const Text('Add'),
+          ValueListenableBuilder<String?>(
+            valueListenable: errorNotifier,
+            builder: (_, error, __) => FilledButton(
+              onPressed: error == null ? () => addKey(ctx) : null,
+              child: const Text('Add'),
+            ),
           ),
         ],
       ),
     ).then((_) {
       controller.dispose();
       autoGenerate.dispose();
+      errorNotifier.dispose();
+      camelPreview.dispose();
     });
   }
 
